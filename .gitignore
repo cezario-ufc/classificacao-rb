@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Project-specific
+data/raw/
+data/processed/
+outputs/
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.h5
+*.tar
+*.zip
+
+# Logs
+*.log
+logs/
+runs/
+wandb/
+mlruns/
+
+# Coverage / tests
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
