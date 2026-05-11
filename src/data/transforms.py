@@ -4,7 +4,9 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
 
-def get_train_transforms(img_size: int):
+def get_train_transforms(img_size: int, augment: bool = True):
+    if not augment:
+        return get_eval_transforms(img_size)
     return transforms.Compose([
         transforms.Resize((img_size, img_size)),
         transforms.RandomHorizontalFlip(),

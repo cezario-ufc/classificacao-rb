@@ -17,6 +17,7 @@ from src.config import (
     OUTPUTS_DIR,
     PARAM_GRID,
     SEED,
+    USE_AUGMENT,
 )
 from src.data.build_dataset_ddr import build_classification_dataframe_ddr
 from src.data.dataset import RetinopathyDataset
@@ -45,7 +46,7 @@ def run_pipeline(model_name: str):
     df = build_classification_dataframe_ddr()
     splits_df = make_kfold_splits(df)
 
-    train_tf = get_train_transforms(IMG_SIZE)
+    train_tf = get_train_transforms(IMG_SIZE, augment=USE_AUGMENT)
     eval_tf = get_eval_transforms(IMG_SIZE)
 
     test_scores = []
