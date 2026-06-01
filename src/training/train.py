@@ -24,7 +24,7 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
         optimizer.step()
 
 
-def evaluate(model, loader, device):
+def evaluate(model, loader, device, num_classes=NUM_CLASSES):
     model.eval()
     y_true, y_pred, y_prob = [], [], []
     with torch.no_grad():
@@ -40,7 +40,7 @@ def evaluate(model, loader, device):
     y_true = np.array(y_true)
     y_pred = np.array(y_pred)
     y_prob = np.concatenate(y_prob, axis=0)
-    labels = list(range(NUM_CLASSES))
+    labels = list(range(num_classes))
 
     try:
         auc_roc = roc_auc_score(
