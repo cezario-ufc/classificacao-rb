@@ -59,7 +59,8 @@ def run_pipeline(model_name: str):
         trainDivided_loader = make_loader(train_df, train_tf, shuffle=True)
         val_loader = make_loader(val_df, eval_tf, shuffle=False)
 
-        accs_val = []
+        f1s_val = []
+        val_metrics_all = []
         par = []
 
         for params in ParameterGrid(PARAM_GRID):
@@ -75,18 +76,28 @@ def run_pipeline(model_name: str):
             for _ in range(EPOCHS_GRIDSEARCH):
                 train_one_epoch(model, trainDivided_loader, criterion, optimizer, device)
 
-            acc = evaluate(model, val_loader, device)
-            print(f"    val_acc={acc:.4f}")
-            accs_val.append(acc)
+            val_metrics = evaluate(model, val_loader, device)
+            print(
+                f"    val_acc={val_metrics['accuracy']:.4f}"
+                f" f1={val_metrics['f1_macro']:.4f}"
+                f" auc={val_metrics['auc_roc_macro_ovr']:.4f}"
+            )
+            f1s_val.append(val_metrics["f1_macro"])
+            val_metrics_all.append(val_metrics)
             par.append(params)
 
             del model, optimizer, criterion
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
-        best_idx = accs_val.index(max(accs_val))
+        best_idx = f1s_val.index(max(f1s_val))
         best_params = par[best_idx]
-        print(f"  Melhores hiperparametros: {best_params}  val_acc={accs_val[best_idx]:.4f}")
+        best_val_metrics = val_metrics_all[best_idx]
+        print(
+            f"  Melhores hiperparametros: {best_params}"
+            f"  val_f1={best_val_metrics['f1_macro']:.4f}"
+            f"  val_acc={best_val_metrics['accuracy']:.4f}"
+        )
 
         full_train_df = pd.concat([train_df, val_df], ignore_index=True)
         full_train_loader = make_loader(full_train_df, train_tf, shuffle=True)
@@ -103,14 +114,20 @@ def run_pipeline(model_name: str):
         for _ in range(EPOCHS_FINAL):
             train_one_epoch(model_best, full_train_loader, criterion, optimizer, device)
 
-        test_acc = evaluate(model_best, test_loader, device)
-        print(f"  test_acc={test_acc:.4f}")
-        test_scores.append(test_acc)
+        test_metrics = evaluate(model_best, test_loader, device)
+        print(
+            f"  test_acc={test_metrics['accuracy']:.4f}"
+            f" precision={test_metrics['precision_macro']:.4f}"
+            f" recall={test_metrics['recall_macro']:.4f}"
+            f" f1={test_metrics['f1_macro']:.4f}"
+            f" auc={test_metrics['auc_roc_macro_ovr']:.4f}"
+        )
+        test_scores.append(test_metrics["accuracy"])
         fold_results.append({
             "fold": fold_id,
             "best_params": best_params,
-            "val_acc": accs_val[best_idx],
-            "test_acc": test_acc,
+            "val_metrics": best_val_metrics,
+            "test_metrics": test_metrics,
         })
 
         del model_best, optimizer, criterion
@@ -118,13 +135,27 @@ def run_pipeline(model_name: str):
             torch.cuda.empty_cache()
 
     mean_acc = sum(test_scores) / len(test_scores)
-    print(f"\n[{model_name}] Acuracia media nos conjuntos de testes: {mean_acc:.4f}")
+    scalar_keys = [
+        "accuracy",
+        "precision_macro",
+        "recall_macro",
+        "f1_macro",
+        "auc_roc_macro_ovr",
+    ]
+    mean_test_metrics = {
+        k: sum(f["test_metrics"][k] for f in fold_results) / len(fold_results)
+        for k in scalar_keys
+    }
+    print(f"\n[{model_name}] Metricas medias nos conjuntos de teste:")
+    for k, v in mean_test_metrics.items():
+        print(f"  {k}={v:.4f}")
 
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     out = {
         "model": model_name,
         "test_scores": test_scores,
         "mean_test_acc": mean_acc,
+        "mean_test_metrics": mean_test_metrics,
         "folds": fold_results,
     }
     out_path = OUTPUTS_DIR / f"results_{model_name}.json"
