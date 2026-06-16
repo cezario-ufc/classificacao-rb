@@ -1,8 +1,11 @@
+import argparse
+
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold, train_test_split
 
 from src.config import N_SPLITS, OUTPUTS_DIR, SEED, SPLITS_CSV, VAL_RATIO
 from src.data.build_dataset_ddr import build_classification_dataframe_ddr
+from src.data.build_dataset_mesidor import build_classification_dataframe_mesidor
 
 
 def make_kfold_splits(df: pd.DataFrame) -> pd.DataFrame:
@@ -35,10 +38,22 @@ def get_fold_dfs(splits_df: pd.DataFrame, fold_id: int):
 
 
 if __name__ == "__main__":
-    df = build_classification_dataframe_ddr()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="ddr",
+        choices=["ddr", "mesidor"],
+    )
+    args = parser.parse_args()
+
+    if args.dataset == "ddr":
+        df = build_classification_dataframe_ddr()
+    else:
+        df = build_classification_dataframe_mesidor()
     splits_df = make_kfold_splits(df)
 
-    print(f"Total: {len(splits_df)} imagens (DDR)\n")
+    print(f"Total: {len(splits_df)} imagens ({args.dataset})\n")
 
     print("Distribuicao geral por classe:")
     print(splits_df["label"].value_counts(normalize=True).sort_index().round(3))

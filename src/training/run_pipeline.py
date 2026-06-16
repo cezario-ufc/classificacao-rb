@@ -20,11 +20,20 @@ from src.config import (
     USE_AUGMENT,
 )
 from src.data.build_dataset_ddr import build_classification_dataframe_ddr
+from src.data.build_dataset_mesidor import build_classification_dataframe_mesidor
 from src.data.dataset import RetinopathyDataset
 from src.data.splits_kfold import get_fold_dfs, make_kfold_splits
 from src.data.transforms import get_eval_transforms, get_train_transforms
 from src.models.builders import MODEL_BUILDERS
 from src.training.train import evaluate, train_one_epoch
+
+
+def get_dataset_config(dataset: str):
+    if dataset == "ddr":
+        return build_classification_dataframe_ddr, 5
+    if dataset == "mesidor":
+        return build_classification_dataframe_mesidor, 4
+    raise ValueError(f"Dataset desconhecido: {dataset}")
 
 
 def make_loader(df, transform, shuffle):
@@ -38,12 +47,14 @@ def make_loader(df, transform, shuffle):
     )
 
 
-def run_pipeline(model_name: str):
+def run_pipeline(model_name: str, dataset: str = "ddr"):
     torch.manual_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[{model_name}] device={device}")
+    tag = f"{dataset}/{model_name}"
+    print(f"[{tag}] device={device}")
 
-    df = build_classification_dataframe_ddr()
+    builder, num_classes = get_dataset_config(dataset)
+    df = builder()
     splits_df = make_kfold_splits(df)
 
     train_tf = get_train_transforms(IMG_SIZE, augment=USE_AUGMENT)
@@ -53,7 +64,7 @@ def run_pipeline(model_name: str):
     fold_results = []
 
     for fold_id in range(N_SPLITS):
-        print(f"\n[{model_name}] === Fold {fold_id} ===")
+        print(f"\n[{tag}] === Fold {fold_id} ===")
         train_df, val_df, test_df = get_fold_dfs(splits_df, fold_id)
 
         trainDivided_loader = make_loader(train_df, train_tf, shuffle=True)
@@ -65,7 +76,7 @@ def run_pipeline(model_name: str):
 
         for params in ParameterGrid(PARAM_GRID):
             print(f"  params={params}")
-            model = MODEL_BUILDERS[model_name]().to(device)
+            model = MODEL_BUILDERS[model_name](num_classes=num_classes).to(device)
             criterion = nn.CrossEntropyLoss()
             optimizer = torch.optim.Adam(
                 model.parameters(),
@@ -76,7 +87,7 @@ def run_pipeline(model_name: str):
             for _ in range(EPOCHS_GRIDSEARCH):
                 train_one_epoch(model, trainDivided_loader, criterion, optimizer, device)
 
-            val_metrics = evaluate(model, val_loader, device)
+            val_metrics = evaluate(model, val_loader, device, num_classes=num_classes)
             print(
                 f"    val_acc={val_metrics['accuracy']:.4f}"
                 f" f1={val_metrics['f1_macro']:.4f}"
@@ -103,7 +114,7 @@ def run_pipeline(model_name: str):
         full_train_loader = make_loader(full_train_df, train_tf, shuffle=True)
         test_loader = make_loader(test_df, eval_tf, shuffle=False)
 
-        model_best = MODEL_BUILDERS[model_name]().to(device)
+        model_best = MODEL_BUILDERS[model_name](num_classes=num_classes).to(device)
         criterion = nn.CrossEntropyLoss()
         optimizer = torch.optim.Adam(
             model_best.parameters(),
@@ -114,7 +125,7 @@ def run_pipeline(model_name: str):
         for _ in range(EPOCHS_FINAL):
             train_one_epoch(model_best, full_train_loader, criterion, optimizer, device)
 
-        test_metrics = evaluate(model_best, test_loader, device)
+        test_metrics = evaluate(model_best, test_loader, device, num_classes=num_classes)
         print(
             f"  test_acc={test_metrics['accuracy']:.4f}"
             f" precision={test_metrics['precision_macro']:.4f}"
@@ -146,22 +157,24 @@ def run_pipeline(model_name: str):
         k: sum(f["test_metrics"][k] for f in fold_results) / len(fold_results)
         for k in scalar_keys
     }
-    print(f"\n[{model_name}] Metricas medias nos conjuntos de teste:")
+    print(f"\n[{tag}] Metricas medias nos conjuntos de teste:")
     for k, v in mean_test_metrics.items():
         print(f"  {k}={v:.4f}")
 
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
     out = {
+        "dataset": dataset,
         "model": model_name,
+        "num_classes": num_classes,
         "test_scores": test_scores,
         "mean_test_acc": mean_acc,
         "mean_test_metrics": mean_test_metrics,
         "folds": fold_results,
     }
-    out_path = OUTPUTS_DIR / f"results_{model_name}.json"
+    out_path = OUTPUTS_DIR / f"results_{dataset}_{model_name}.json"
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
-    print(f"[{model_name}] Resultados salvos em: {out_path}")
+    print(f"[{tag}] Resultados salvos em: {out_path}")
 
     return mean_acc
 
@@ -174,14 +187,20 @@ if __name__ == "__main__":
         default="all",
         choices=list(MODEL_BUILDERS.keys()) + ["all"],
     )
+    parser.add_argument(
+        "--dataset",
+        type=str,
+        default="ddr",
+        choices=["ddr", "mesidor"],
+    )
     args = parser.parse_args()
 
     if args.model == "all":
         results = {}
         for name in MODEL_BUILDERS.keys():
-            results[name] = run_pipeline(name)
-        print("\n=== Resumo final ===")
+            results[name] = run_pipeline(name, dataset=args.dataset)
+        print(f"\n=== Resumo final ({args.dataset}) ===")
         for name, acc in results.items():
             print(f"{name}: {acc:.4f}")
     else:
-        run_pipeline(args.model)
+        run_pipeline(args.model, dataset=args.dataset)
