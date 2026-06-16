@@ -3,3 +3,4 @@ pandas
 scikit-learn
 Pillow
 matplotlib
+xlrd>=2.0.1
