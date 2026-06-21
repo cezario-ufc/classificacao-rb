@@ -39,3 +39,11 @@ PARAM_GRID = {
     "lr": [1e-3, 1e-4],
     "weight_decay": [0.0, 1e-4],
 }
+
+USE_CHANNEL_DECOMP = False
+# Preenchido pelo calibrate_channel_stats.py. Se vazio quando USE_CHANNEL_DECOMP=True,
+# o pipeline cai pra IMAGENET_MEAN/STD com aviso.
+CHANNEL_DECOMP_STATS = {
+    "ddr": {"mean": None, "std": None},
+    "mesidor": {"mean": None, "std": None},
+}

@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 
 from src.config import (
     BATCH_SIZE,
+    CHANNEL_DECOMP_STATS,
     EPOCHS_FINAL,
     EPOCHS_GRIDSEARCH,
     IMG_SIZE,
@@ -18,6 +19,7 @@ from src.config import (
     PARAM_GRID,
     SEED,
     USE_AUGMENT,
+    USE_CHANNEL_DECOMP,
 )
 from src.data.build_dataset_ddr import build_classification_dataframe_ddr
 from src.data.build_dataset_mesidor import build_classification_dataframe_mesidor
@@ -47,18 +49,46 @@ def make_loader(df, transform, shuffle):
     )
 
 
-def run_pipeline(model_name: str, dataset: str = "ddr"):
+def _resolve_norm_stats(dataset: str, use_channel_decomp: bool):
+    if not use_channel_decomp:
+        return None, None
+    stats = CHANNEL_DECOMP_STATS.get(dataset, {})
+    mean, std = stats.get("mean"), stats.get("std")
+    if mean is None or std is None:
+        print(
+            f"[aviso] CHANNEL_DECOMP_STATS[{dataset!r}] vazio."
+            " Caindo pra IMAGENET_MEAN/STD."
+            " Rode src.data.calibrate_channel_stats antes para melhores resultados."
+        )
+        return None, None
+    return mean, std
+
+
+def run_pipeline(model_name: str, dataset: str = "ddr", use_channel_decomp: bool = False):
     torch.manual_seed(SEED)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tag = f"{dataset}/{model_name}"
-    print(f"[{tag}] device={device}")
+    suffix = "_chdec" if use_channel_decomp else ""
+    tag = f"{dataset}/{model_name}{suffix}"
+    print(f"[{tag}] device={device}  channel_decomp={use_channel_decomp}")
 
     builder, num_classes = get_dataset_config(dataset)
     df = builder()
     splits_df = make_kfold_splits(df)
 
-    train_tf = get_train_transforms(IMG_SIZE, augment=USE_AUGMENT)
-    eval_tf = get_eval_transforms(IMG_SIZE)
+    mean, std = _resolve_norm_stats(dataset, use_channel_decomp)
+    train_tf = get_train_transforms(
+        IMG_SIZE,
+        augment=USE_AUGMENT,
+        use_channel_decomp=use_channel_decomp,
+        mean=mean,
+        std=std,
+    )
+    eval_tf = get_eval_transforms(
+        IMG_SIZE,
+        use_channel_decomp=use_channel_decomp,
+        mean=mean,
+        std=std,
+    )
 
     test_scores = []
     fold_results = []
@@ -166,12 +196,13 @@ def run_pipeline(model_name: str, dataset: str = "ddr"):
         "dataset": dataset,
         "model": model_name,
         "num_classes": num_classes,
+        "use_channel_decomp": use_channel_decomp,
         "test_scores": test_scores,
         "mean_test_acc": mean_acc,
         "mean_test_metrics": mean_test_metrics,
         "folds": fold_results,
     }
-    out_path = OUTPUTS_DIR / f"results_{dataset}_{model_name}.json"
+    out_path = OUTPUTS_DIR / f"results_{dataset}_{model_name}{suffix}.json"
     with open(out_path, "w") as f:
         json.dump(out, f, indent=2)
     print(f"[{tag}] Resultados salvos em: {out_path}")
@@ -193,14 +224,28 @@ if __name__ == "__main__":
         default="ddr",
         choices=["ddr", "mesidor"],
     )
+    parser.add_argument(
+        "--channel-decomp",
+        action="store_true",
+        default=USE_CHANNEL_DECOMP,
+        help="Ativa a decomposicao de canais (R=iluminacao, G=CLAHE, B=top-hat).",
+    )
     args = parser.parse_args()
 
     if args.model == "all":
         results = {}
         for name in MODEL_BUILDERS.keys():
-            results[name] = run_pipeline(name, dataset=args.dataset)
+            results[name] = run_pipeline(
+                name,
+                dataset=args.dataset,
+                use_channel_decomp=args.channel_decomp,
+            )
         print(f"\n=== Resumo final ({args.dataset}) ===")
         for name, acc in results.items():
             print(f"{name}: {acc:.4f}")
     else:
-        run_pipeline(args.model, dataset=args.dataset)
+        run_pipeline(
+            args.model,
+            dataset=args.dataset,
+            use_channel_decomp=args.channel_decomp,
+        )
