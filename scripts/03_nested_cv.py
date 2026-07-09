@@ -24,8 +24,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from sklearn.model_selection import ParameterGrid
-
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -37,39 +35,39 @@ from ddr_sahi.folds import (  # noqa: E402
     make_folds,
 )
 from ddr_sahi.slicing import slice_train_set  # noqa: E402
-from ddr_sahi.train_eval import (  # noqa: E402
-    evaluate_config,
-    evaluate_config_full,
-    train_yolo,
-)
+from ddr_sahi.train_eval import evaluate_config_full, train_yolo  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results"
 RUNS_DIR = REPO_ROOT / "runs" / "nested_cv"
 SLICED_DIR = REPO_ROOT / "data" / "sliced"
 
-# Grade completa (execução real). Config B usa slice/overlap; A ignora.
-PARAM_GRID = {
-    "model": ["yolov8m.pt"],
-    "lr0": [0.01, 0.001],
-    "imgsz": [1024],
-    "epochs": [150],
-    "batch": [8],
-    "conf": [0.1],
-    "slice": [512, 640],
-    "overlap": [0.2],
+# Hiperparâmetros FIXOS (sem GridSearch): a busca aninhada era inviável no tempo real
+# (multiplicava os treinos por fold). slice/overlap só afetam B/C. patience = early-stopping
+# (para quando o val do Ultralytics estabiliza), então 'epochs' é só o teto de segurança.
+PARAMS = {
+    "model": "yolov8m.pt",
+    "lr0": 0.01,
+    "imgsz": 1024,
+    "epochs": 100,
+    "patience": 20,
+    "batch": 8,
+    "conf": 0.1,
+    "slice": 512,
+    "overlap": 0.2,
 }
 
-# Overrides do smoke-test (roda em segundos/minutos na GPU local).
-SMOKE_GRID = {
-    "model": ["yolov8n.pt"],
-    "lr0": [0.01],
-    "imgsz": [640],
-    "epochs": [1],
-    "batch": [4],
-    "conf": [0.1],
-    "slice": [320],
-    "overlap": [0.2],
+# Overrides do smoke-test (roda em segundos/minutos).
+SMOKE_PARAMS = {
+    "model": "yolov8n.pt",
+    "lr0": 0.01,
+    "imgsz": 640,
+    "epochs": 1,
+    "patience": 0,
+    "batch": 4,
+    "conf": 0.1,
+    "slice": 320,
+    "overlap": 0.2,
 }
 SMOKE_SUBSET = {"train": 8, "val": 4, "test": 4}
 
@@ -112,51 +110,36 @@ def sliced_data_yaml(image_names, val_txt, out_dir, params):
     return yaml_path
 
 
-def train_data_yaml(config, split, info, params, phase):
-    """data.yaml de treino conforme a config. phase: 'grid' (train/val) ou 'best' (train_full)."""
+def train_data_yaml(config, split, info, params):
+    """data.yaml de treino. A/B treinam em imagens cheias (train), com val p/ early-stopping.
+    C treina nos tiles do train do fold; val continua sendo imagens cheias."""
     if config in ("A", "B"):
-        return info["grid_yaml"] if phase == "grid" else info["full_yaml"]
-    # Config C: treina em tiles
-    names = split["train"] if phase == "grid" else split["train_full"]
-    out = SLICED_DIR / info["dir"].name / phase
-    return sliced_data_yaml(names, info["dir"] / "val.txt", out, params)
+        return info["grid_yaml"]        # train=train.txt, val=val.txt
+    out = SLICED_DIR / info["dir"].name
+    return sliced_data_yaml(split["train"], info["dir"] / "val.txt", out, params)
 
 
-def run_fold(split, grid, config, device):
+def run_fold(split, params, config, device):
+    """Um treino por fold (sem GridSearch): treina no train do fold (val p/ early-stopping)
+    e avalia no test do fold com a inferência da config (imagem cheia ou SAHI)."""
     use_sahi = config in ("B", "C")
     info = build_fold_dirs(split)
     proj = RUNS_DIR / info["dir"].name
 
-    # --- GridSearch interno: treina em train, valida em val ---
-    val_maps, params_list = [], []
-    for params in ParameterGrid(grid):
-        data_yaml = train_data_yaml(config, split, info, params, "grid")
-        weights = train_yolo(params["model"], data_yaml, params,
-                             ul_device(device), proj, "grid")
-        m = evaluate_config(weights, img_paths(split["val"]), params, device, use_sahi)
-        val_maps.append(m["mAP@0.1"])
-        params_list.append(params)
-        print(f"    grid {params['model']} lr0={params['lr0']} "
-              f"slice={params.get('slice')} -> val mAP@0.1={m['mAP@0.1']:.4f}")
-
-    best = params_list[int(np.argmax(val_maps))]
-    print(f"  melhores hiperparâmetros: lr0={best['lr0']} slice={best.get('slice')}")
-
-    # --- re-treino no treino COMPLETO do fold e avaliação no TESTE ---
-    data_yaml = train_data_yaml(config, split, info, best, "best")
-    weights = train_yolo(best["model"], data_yaml, best,
-                         ul_device(device), proj, "best")
-    res, per_image = evaluate_config_full(weights, img_paths(split["test"]), best,
+    data_yaml = train_data_yaml(config, split, info, params)
+    weights = train_yolo(params["model"], data_yaml, params,
+                         ul_device(device), proj, "train")
+    res, per_image = evaluate_config_full(weights, img_paths(split["test"]), params,
                                           device, use_sahi)
 
-    # Config C gera ~15-18k tiles por fatiamento; apaga os tiles deste fold apos o uso
-    # para nao acumular centenas de GB ao longo dos 30 folds.
+    # Config C gera ~15-18k tiles por fatiamento; apaga os tiles do fold após o uso
+    # para não acumular disco ao longo dos folds.
     if config == "C":
         fold_tiles = SLICED_DIR / info["dir"].name
         shutil.rmtree(fold_tiles, ignore_errors=True)
         print(f"  [C] tiles do fold removidos ({fold_tiles.name})")
 
-    return best, res, per_image
+    return res, per_image
 
 
 def main():
@@ -169,7 +152,7 @@ def main():
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
 
-    grid = SMOKE_GRID if args.smoke else PARAM_GRID
+    params = SMOKE_PARAMS if args.smoke else PARAMS
 
     images, Y = load_manifest()
     splits = make_folds(images, Y)
@@ -197,7 +180,7 @@ def main():
     for split in splits:
         tag = f"r{split['repeat']}_f{split['fold']}"
         print(f"\n[{tag}]")
-        best, res, per_image = run_fold(split, grid, args.config, args.device)
+        res, per_image = run_fold(split, params, args.config, args.device)
         print(f"  TESTE: mAP@0.1={res['mAP@0.1']:.4f}  mAP@0.5={res['mAP@0.5']:.4f}")
         test_maps.append(res["mAP@0.1"])
         rows.append({"config": cfg_name, "repeat": split["repeat"],

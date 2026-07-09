@@ -27,6 +27,7 @@ def map_params(params: dict) -> dict:
         "imgsz": params["imgsz"],
         "lr0": params["lr0"],
         "epochs": params["epochs"],
+        "patience": params.get("patience", 100),   # early-stopping
         "batch": params["batch"],
         "optimizer": params.get("optimizer", "SGD"),
     }
