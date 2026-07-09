@@ -11,6 +11,7 @@ echo "[entrypoint] data_root=$DATA_ROOT"
 
 mkdir -p "$DATA_ROOT"
 
+# 1) Sincroniza o(s) dataset(s) do S3 (pulando o que já foi baixado).
 for ds in $DATASETS; do
     local_path="$DATA_ROOT/$ds"
     marker="$local_path/.sync_complete"
@@ -26,6 +27,15 @@ for ds in $DATASETS; do
     touch "$marker"
     echo "[entrypoint] $ds sincronizado"
 done
+
+# 2) Converte as anotações do DDR (Pascal VOC -> YOLO) se ainda não foi feito.
+#    Gera o pool data/yolo/ consumido pelo treino. Idempotente via manifest.csv.
+if [ ! -f /app/data/yolo/manifest.csv ]; then
+    echo "[entrypoint] convertendo anotações (scripts/01_convert_annotations.py) ..."
+    python scripts/01_convert_annotations.py
+else
+    echo "[entrypoint] pool YOLO já existe (data/yolo/manifest.csv), pulando conversão"
+fi
 
 echo "[entrypoint] iniciando: $*"
 exec "$@"
