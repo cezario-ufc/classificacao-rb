@@ -72,6 +72,14 @@ SMOKE_PARAMS = {
 }
 SMOKE_SUBSET = {"train": 8, "val": 4, "test": 4}
 
+# Overrides de TREINO por config. A Config C treina nos tiles nativos (512px): treinar em
+# imgsz=1024 ampliaria cada tile 512->1024, gastando ~4x compute sem nova informação. Como
+# a memória sobra (tiles menores), aumenta o batch. Só afeta o treino; a inferência (slice,
+# conf) e as configs A/B (imagem cheia, 1024) não mudam.
+CONFIG_TRAIN_OVERRIDES = {
+    "C": {"imgsz": 512, "batch": 16},
+}
+
 
 def img_paths(names):
     return [str((YOLO_DIR / "images" / n).resolve()) for n in names]
@@ -135,7 +143,9 @@ def run_fold(split, params, config, device):
     # regime de treino: 'A'/'B'/'AB' treinam em imagem cheia; 'C' em tiles.
     train_regime = "A" if config in ("A", "B", "AB") else "C"
     data_yaml = train_data_yaml(train_regime, split, info, params)
-    weights = train_yolo(params["model"], data_yaml, params,
+    # aplica overrides de treino da config (ex.: C usa imgsz=512, batch maior)
+    train_params = {**params, **CONFIG_TRAIN_OVERRIDES.get(config, {})}
+    weights = train_yolo(train_params["model"], data_yaml, train_params,
                          ul_device(device), proj, "train")
 
     if config == "AB":
