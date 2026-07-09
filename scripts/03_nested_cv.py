@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import shutil
 import sys
 from pathlib import Path
 
@@ -147,6 +148,14 @@ def run_fold(split, grid, config, device):
                          ul_device(device), proj, "best")
     res, per_image = evaluate_config_full(weights, img_paths(split["test"]), best,
                                           device, use_sahi)
+
+    # Config C gera ~15-18k tiles por fatiamento; apaga os tiles deste fold apos o uso
+    # para nao acumular centenas de GB ao longo dos 30 folds.
+    if config == "C":
+        fold_tiles = SLICED_DIR / info["dir"].name
+        shutil.rmtree(fold_tiles, ignore_errors=True)
+        print(f"  [C] tiles do fold removidos ({fold_tiles.name})")
+
     return best, res, per_image
 
 
