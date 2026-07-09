@@ -44,6 +44,12 @@ desktop.ini
 # Project-specific
 data/raw/
 data/processed/
+# pool YOLO gerado (imagens hardlink + labels); reproduzível via scripts/01
+data/yolo/
+# tiles do SAHI (Etapa 6)
+data/sliced/
+# métricas geradas (fold_maps*.csv etc.)
+results/
 outputs/
 *.pth
 *.pt

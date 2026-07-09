@@ -1,7 +1,26 @@
-numpy
-pandas
-scikit-learn
-Pillow
-matplotlib
-xlrd>=2.0.1
+# Nova hipótese: detecção de lesões de RD (YOLO vs. YOLO + SAHI) no DDR.
+# GPU: instale o torch/torchvision compatíveis com sua CUDA ANTES (https://pytorch.org);
+# o ultralytics puxa torch, mas deixar explícito evita pegar build errado de CUDA.
+
+# Detector e slicing
+ultralytics>=8.2.0
+sahi>=0.11.18
+
+# Visão / IO
 opencv-python-headless
+numpy
+scikit-image
+Pillow
+
+# Avaliação (mAP COCO) e estatística
+pycocotools
+scipy
+statsmodels
+iterative-stratification   # RepeatedMultilabelStratifiedKFold (Etapa 3, opcional)
+
+# Splits / utilitários
+scikit-learn               # RepeatedKFold, train_test_split, ParameterGrid
+pandas
+pyyaml
+tqdm
+matplotlib
