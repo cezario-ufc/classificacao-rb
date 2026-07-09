@@ -100,32 +100,34 @@ def subset_split(split, subset):
     return s
 
 
-def sliced_data_yaml(image_names, val_txt, out_dir, params):
-    """Config C: fatia as imagens de treino em tiles e monta um data.yaml (train=tiles,
-    val=imagens cheias). slice/overlap seguem os hiperparâmetros do fold (mesma escala da
-    inferência SAHI)."""
-    img_dir, n_tiles, n_ann = slice_train_set(
-        img_paths(image_names), out_dir,
-        slice_size=params["slice"], overlap=params["overlap"],
-    )
-    yaml_path = Path(out_dir) / "data.yaml"
+def sliced_data_yaml(train_names, val_names, out_dir, params):
+    """Config C: fatia treino E validação em tiles e monta o data.yaml. O val também é
+    fatiado (não imagem cheia) para que o mAP de validação — que guia o early-stopping e a
+    escolha do best.pt — reflita o domínio de tiles em que a C opera (mesmo do SAHI). Validar
+    em imagem cheia dava mAP ~0 (o modelo de tiles mal detecta na imagem inteira) e
+    descalibrava o early-stopping. slice/overlap seguem os hiperparâmetros do fold."""
+    out_dir = Path(out_dir)
+    kw = dict(slice_size=params["slice"], overlap=params["overlap"])
+    train_dir, n_tr, _ = slice_train_set(img_paths(train_names), out_dir / "train", **kw)
+    val_dir, n_va, _ = slice_train_set(img_paths(val_names), out_dir / "val", **kw)
+    yaml_path = out_dir / "data.yaml"
     with open(yaml_path, "w") as f:
         yaml.safe_dump({
-            "train": str(img_dir.resolve()),
-            "val": str(val_txt), "test": str(val_txt),
+            "train": str(train_dir.resolve()),
+            "val": str(val_dir.resolve()), "test": str(val_dir.resolve()),
             "names": CLASS_NAMES,
         }, f, sort_keys=False, allow_unicode=True)
-    print(f"    [C] fatiado: {n_tiles} tiles, {n_ann} caixas")
+    print(f"    [C] fatiado: treino {n_tr} tiles, val {n_va} tiles")
     return yaml_path
 
 
 def train_data_yaml(config, split, info, out_base, params):
     """data.yaml de treino. A/B treinam em imagens cheias (train), com val p/ early-stopping.
-    C treina nos tiles do train do fold; val continua sendo imagens cheias."""
+    C treina E valida em tiles (val fatiado, não imagem cheia)."""
     if config in ("A", "B"):
         return info["grid_yaml"]        # train=train.txt, val=val.txt
     out = out_base / info["dir"].name
-    return sliced_data_yaml(split["train"], info["dir"] / "val.txt", out, params)
+    return sliced_data_yaml(split["train"], split["val"], out, params)
 
 
 def run_fold(split, params, config, device):
