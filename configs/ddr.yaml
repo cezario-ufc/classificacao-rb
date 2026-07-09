@@ -1,0 +1,19 @@
+# Dataset YOLO do DDR (detecção de lesões) — gerado por scripts/01_convert_annotations.py
+#
+# O pool é FLAT: todas as 757 imagens anotadas em images/ e labels/ (sem split fixo).
+# A divisão treino/val/teste é feita pela validação cruzada repetida da Etapa 3, que gera
+# um data.yaml por fold sobrescrevendo `train`/`val`/`test`.
+#
+# Os caminhos train/val abaixo apontam para o pool inteiro e servem apenas para um
+# smoke-test isolado (Etapa 4) — NÃO use para medir desempenho (treino == validação).
+
+path: ../data/yolo
+train: images
+val: images
+test: images
+
+names:
+  0: MA   # microaneurisma
+  1: EX   # exsudato duro
+  2: SE   # exsudato mole
+  3: HE   # hemorragia
