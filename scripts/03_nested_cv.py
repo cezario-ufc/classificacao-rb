@@ -119,12 +119,12 @@ def sliced_data_yaml(image_names, val_txt, out_dir, params):
     return yaml_path
 
 
-def train_data_yaml(config, split, info, params):
+def train_data_yaml(config, split, info, out_base, params):
     """data.yaml de treino. A/B treinam em imagens cheias (train), com val p/ early-stopping.
     C treina nos tiles do train do fold; val continua sendo imagens cheias."""
     if config in ("A", "B"):
         return info["grid_yaml"]        # train=train.txt, val=val.txt
-    out = SLICED_DIR / info["dir"].name
+    out = out_base / info["dir"].name
     return sliced_data_yaml(split["train"], info["dir"] / "val.txt", out, params)
 
 
@@ -135,14 +135,18 @@ def run_fold(split, params, config, device):
     'AB' treina UMA vez em imagem cheia e avalia o MESMO modelo de dois jeitos: imagem
     cheia (A) e SAHI (B). Assim A vs B isola exatamente a inferência e economiza 1 treino.
     A/B/C individuais treinam e avaliam uma config só.
+
+    Todas as saídas são isoladas por config (runs/.../<config>/...) para permitir rodar
+    configs diferentes em paralelo (ex.: AB numa GPU e C na outra) sem colisão de arquivos.
     """
-    info = build_fold_dirs(split)
-    proj = RUNS_DIR / info["dir"].name
+    info = build_fold_dirs(split, base_dir=RUNS_DIR.parent / "folds" / config)
+    proj = RUNS_DIR / config / info["dir"].name
+    sliced_base = SLICED_DIR / config
     test_imgs = img_paths(split["test"])
 
     # regime de treino: 'A'/'B'/'AB' treinam em imagem cheia; 'C' em tiles.
     train_regime = "A" if config in ("A", "B", "AB") else "C"
-    data_yaml = train_data_yaml(train_regime, split, info, params)
+    data_yaml = train_data_yaml(train_regime, split, info, sliced_base, params)
     # aplica overrides de treino da config (ex.: C usa imgsz=512, batch maior)
     train_params = {**params, **CONFIG_TRAIN_OVERRIDES.get(config, {})}
     weights = train_yolo(train_params["model"], data_yaml, train_params,
@@ -160,7 +164,7 @@ def run_fold(split, params, config, device):
     # Config C gera ~15-18k tiles por fatiamento; apaga os tiles do fold após o uso
     # para não acumular disco ao longo dos folds.
     if config == "C":
-        fold_tiles = SLICED_DIR / info["dir"].name
+        fold_tiles = sliced_base / info["dir"].name
         shutil.rmtree(fold_tiles, ignore_errors=True)
         print(f"  [C] tiles do fold removidos ({fold_tiles.name})")
 
