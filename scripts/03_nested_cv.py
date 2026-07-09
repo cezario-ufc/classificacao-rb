@@ -21,6 +21,7 @@ import argparse
 import csv
 import shutil
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -120,17 +121,31 @@ def train_data_yaml(config, split, info, params):
 
 
 def run_fold(split, params, config, device):
-    """Um treino por fold (sem GridSearch): treina no train do fold (val p/ early-stopping)
-    e avalia no test do fold com a inferência da config (imagem cheia ou SAHI)."""
-    use_sahi = config in ("B", "C")
+    """Treina no train do fold (val p/ early-stopping) e avalia no test. Devolve
+    {config_saida: (metrics, per_image)}.
+
+    'AB' treina UMA vez em imagem cheia e avalia o MESMO modelo de dois jeitos: imagem
+    cheia (A) e SAHI (B). Assim A vs B isola exatamente a inferência e economiza 1 treino.
+    A/B/C individuais treinam e avaliam uma config só.
+    """
     info = build_fold_dirs(split)
     proj = RUNS_DIR / info["dir"].name
+    test_imgs = img_paths(split["test"])
 
-    data_yaml = train_data_yaml(config, split, info, params)
+    # regime de treino: 'A'/'B'/'AB' treinam em imagem cheia; 'C' em tiles.
+    train_regime = "A" if config in ("A", "B", "AB") else "C"
+    data_yaml = train_data_yaml(train_regime, split, info, params)
     weights = train_yolo(params["model"], data_yaml, params,
                          ul_device(device), proj, "train")
-    res, per_image = evaluate_config_full(weights, img_paths(split["test"]), params,
-                                          device, use_sahi)
+
+    if config == "AB":
+        out = {}
+        for out_cfg, use_sahi in [("A", False), ("B", True)]:
+            res, per_image = evaluate_config_full(weights, test_imgs, params, device, use_sahi)
+            out[out_cfg] = (res, per_image)
+    else:
+        use_sahi = config in ("B", "C")
+        out = {config: evaluate_config_full(weights, test_imgs, params, device, use_sahi)}
 
     # Config C gera ~15-18k tiles por fatiamento; apaga os tiles do fold após o uso
     # para não acumular disco ao longo dos folds.
@@ -139,13 +154,30 @@ def run_fold(split, params, config, device):
         shutil.rmtree(fold_tiles, ignore_errors=True)
         print(f"  [C] tiles do fold removidos ({fold_tiles.name})")
 
-    return res, per_image
+    return out
+
+
+def save_config_results(out_cfg, rows, per_image_rows, suffix):
+    """Grava os 2 CSVs de uma config: mAP por fold e AP por imagem (entradas da Etapa 8)."""
+    fold_csv = RESULTS_DIR / f"fold_maps_{out_cfg}{suffix}.csv"
+    with open(fold_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    img_csv = RESULTS_DIR / f"ap_per_image_{out_cfg}{suffix}.csv"
+    with open(img_csv, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(per_image_rows[0].keys()))
+        w.writeheader()
+        w.writerows(per_image_rows)
+    maps = [r["mAP@0.1"] for r in rows]
+    print(f"[{out_cfg}] mAP@0.1: {np.mean(maps):.4f} ± {np.std(maps):.4f} "
+          f"({len(maps)} folds) -> {fold_csv.name}, {img_csv.name}")
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", choices=["A", "B", "C"], required=True,
-                    help="A=imagem cheia, B=SAHI, C=SAHI + fine-tuning em tiles")
+    ap.add_argument("--config", choices=["A", "B", "C", "AB"], required=True,
+                    help="A=imagem cheia, B=SAHI, C=SAHI+fine-tuning; AB=treina 1x e avalia A+B")
     ap.add_argument("--smoke", action="store_true", help="1 fold, subset, 1 época")
     ap.add_argument("--folds", type=int, default=None, metavar="N",
                     help="roda só os N primeiros folds em ESCALA REAL (sanity de VRAM/tempo/disco)")
@@ -168,7 +200,6 @@ def main():
         print(f"config {args.config} | {len(splits)} folds | device {args.device}")
 
     RESULTS_DIR.mkdir(exist_ok=True)
-    cfg_name = f"{args.config}_config"
     # sufixo separa saidas parciais (smoke/sanity) das do resultado final
     if args.smoke:
         suffix = "_smoke"
@@ -176,36 +207,25 @@ def main():
         suffix = f"_folds{args.folds}"
     else:
         suffix = ""
-    rows, per_image_rows, test_maps = [], [], []
+
+    # acumula por config de SAIDA (config 'AB' produz A e B)
+    acc = defaultdict(lambda: {"rows": [], "img": []})
     for split in splits:
         tag = f"r{split['repeat']}_f{split['fold']}"
         print(f"\n[{tag}]")
-        res, per_image = run_fold(split, params, args.config, args.device)
-        print(f"  TESTE: mAP@0.1={res['mAP@0.1']:.4f}  mAP@0.5={res['mAP@0.5']:.4f}")
-        test_maps.append(res["mAP@0.1"])
-        rows.append({"config": cfg_name, "repeat": split["repeat"],
-                     "fold": split["fold"], **res})
-        for img, ap in per_image.items():
-            per_image_rows.append({"config": cfg_name, "repeat": split["repeat"],
-                                   "fold": split["fold"], "image": img, "AP": ap})
+        fold_results = run_fold(split, params, args.config, args.device)
+        for out_cfg, (res, per_image) in fold_results.items():
+            print(f"  [{out_cfg}] TESTE: mAP@0.1={res['mAP@0.1']:.4f}  mAP@0.5={res['mAP@0.5']:.4f}")
+            a = acc[out_cfg]
+            a["rows"].append({"config": f"{out_cfg}_config", "repeat": split["repeat"],
+                              "fold": split["fold"], **res})
+            for img, ap in per_image.items():
+                a["img"].append({"config": f"{out_cfg}_config", "repeat": split["repeat"],
+                                 "fold": split["fold"], "image": img, "AP": ap})
 
-    # (1) vetor de mAPs por fold — comparação pareada por fold (Etapa 8)
-    fold_csv = RESULTS_DIR / f"fold_maps_{args.config}{suffix}.csv"
-    with open(fold_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
-
-    # (2) AP por imagem — comparação pareada por imagem (Etapa 8, mais poder)
-    img_csv = RESULTS_DIR / f"ap_per_image_{args.config}{suffix}.csv"
-    with open(img_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(per_image_rows[0].keys()))
-        w.writeheader()
-        w.writerows(per_image_rows)
-
-    print(f"\nmAP@0.1: {np.mean(test_maps):.4f} ± {np.std(test_maps):.4f} "
-          f"({len(test_maps)} folds)")
-    print(f"Salvo: {fold_csv}\n       {img_csv}")
+    print()
+    for out_cfg, a in acc.items():
+        save_config_results(out_cfg, a["rows"], a["img"], suffix)
 
 
 if __name__ == "__main__":
