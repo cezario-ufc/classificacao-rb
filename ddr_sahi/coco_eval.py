@@ -18,6 +18,11 @@ from pycocotools.cocoeval import COCOeval
 
 CLASS_NAMES = {0: "MA", 1: "EX", 2: "SE", 3: "HE"}
 
+# Lado minimo de caixa (px). O round-trip normalizado do YOLO gera coords sub-pixel
+# (ex.: w=0.999) que fazem o shapely do SAHI calcular area 0 -> divisao por zero no
+# slice_coco (Config C). Garantir >= 2px elimina isso sem afetar o mAP a IoU 0,1/0,5.
+MIN_BOX_PX = 2.0
+
 
 def img2label(img_path: str) -> str:
     """Caminho da label YOLO correspondente (mesma regra do Ultralytics)."""
@@ -43,7 +48,11 @@ def yolo_to_coco_gt(image_paths):
             cid, cx, cy, bw, bh = line.split()
             cid = int(cid)
             cx, cy, bw, bh = float(cx) * w, float(cy) * h, float(bw) * w, float(bh) * h
+            # garante lado minimo (evita area 0 no shapely do SAHI), expandindo do centro
+            bw, bh = max(bw, MIN_BOX_PX), max(bh, MIN_BOX_PX)
             x, y = cx - bw / 2, cy - bh / 2
+            # mantem a caixa dentro da imagem
+            x, y = max(0.0, min(x, w - bw)), max(0.0, min(y, h - bh))
             annotations.append({
                 "id": ann_id, "image_id": img_id, "category_id": cid + 1,
                 "bbox": [x, y, bw, bh], "area": bw * bh, "iscrowd": 0,
