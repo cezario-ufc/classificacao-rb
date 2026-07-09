@@ -41,6 +41,11 @@ desktop.ini
 *.pem
 *.key
 
+# Claude Code e documentacao local (nao versionados)
+.claude/
+CLAUDE.md
+docs/
+
 # Project-specific
 data/raw/
 data/processed/
