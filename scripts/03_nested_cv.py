@@ -155,6 +155,8 @@ def main():
     ap.add_argument("--config", choices=["A", "B", "C"], required=True,
                     help="A=imagem cheia, B=SAHI, C=SAHI + fine-tuning em tiles")
     ap.add_argument("--smoke", action="store_true", help="1 fold, subset, 1 época")
+    ap.add_argument("--folds", type=int, default=None, metavar="N",
+                    help="roda só os N primeiros folds em ESCALA REAL (sanity de VRAM/tempo/disco)")
     ap.add_argument("--device", default="cuda:0")
     args = ap.parse_args()
 
@@ -165,12 +167,23 @@ def main():
     if args.smoke:
         splits = [subset_split(splits[0], SMOKE_SUBSET)]
         print(f"[SMOKE] config {args.config} | 1 fold | subset {SMOKE_SUBSET} | device {args.device}")
+    elif args.folds is not None:
+        total = len(splits)
+        splits = splits[:args.folds]
+        print(f"[SANITY] config {args.config} | {len(splits)}/{total} folds em escala real "
+              f"| device {args.device}")
     else:
         print(f"config {args.config} | {len(splits)} folds | device {args.device}")
 
     RESULTS_DIR.mkdir(exist_ok=True)
     cfg_name = f"{args.config}_config"
-    suffix = "_smoke" if args.smoke else ""
+    # sufixo separa saidas parciais (smoke/sanity) das do resultado final
+    if args.smoke:
+        suffix = "_smoke"
+    elif args.folds is not None:
+        suffix = f"_folds{args.folds}"
+    else:
+        suffix = ""
     rows, per_image_rows, test_maps = [], [], []
     for split in splits:
         tag = f"r{split['repeat']}_f{split['fold']}"
