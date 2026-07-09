@@ -37,8 +37,8 @@ CONFIGS = ["A", "B", "C"]
 CONFIG_LABEL = {"A": "A (baseline)", "B": "B (SAHI)", "C": "C (SAHI+FT)"}
 CLASS_NAMES = ["MA", "EX", "SE", "HE"]
 
-# fração de teste/treino do k-fold externo (10 folds -> teste=1/10, treino=9/10)
-NB_N_TEST, NB_N_TRAIN = 1, 9
+# fração de teste/treino do k-fold externo (5 folds -> teste=1/5, treino=4/5)
+NB_N_TEST, NB_N_TRAIN = 1, 4
 
 
 def holm_bonferroni(pvals):

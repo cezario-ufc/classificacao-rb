@@ -1,4 +1,4 @@
-"""Etapa 3 (parte 1) — gera os folds (10x3, estratificado), materializa os .txt/data.yaml
+"""Etapa 3 (parte 1) — gera os folds (5x3, estratificado), materializa os .txt/data.yaml
 e roda checagens de integridade (anti-vazamento) e de balanço da estratificação.
 
 Uso:
@@ -21,7 +21,7 @@ from ddr_sahi.folds import (  # noqa: E402
     make_folds,
 )
 
-N_SPLITS, N_REPEATS = 10, 3
+N_SPLITS, N_REPEATS = 5, 3
 
 
 def check_integrity(splits, images):

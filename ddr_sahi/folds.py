@@ -1,11 +1,11 @@
 """Etapa 3 (parte 1) — geração dos folds da validação cruzada repetida e estratificada.
 
 Unidade de divisão = IMAGEM (as 757 anotadas). Usa RepeatedMultilabelStratifiedKFold
-(10 folds × 3 repetições = 30 splits) estratificado pelo vetor de presença de lesão
+(5 folds × 3 repetições = 15 splits) estratificado pelo vetor de presença de lesão
 (has_MA/EX/SE/HE) do manifest — essencial dado o desbalanceamento (SE em só 239/757 imagens).
 
 Para cada split externo, gera também um holdout interno (val) estratificado a partir do treino,
-para o GridSearch da Etapa 3 (parte 2).
+usado para early-stopping do treino (Etapa 3 parte 2).
 
 Não materializa pastas: escreve, por fold, três arquivos .txt com caminhos de imagem
 (train/val/test) + um data.yaml. O Ultralytics resolve as labels trocando 'images/'->'labels/'.
@@ -39,8 +39,9 @@ def load_manifest(manifest_path: Path | None = None):
     return images, Y
 
 
-def make_folds(images, Y, n_splits=10, n_repeats=3, val_size=0.2, seed=42):
-    """Gera os 30 splits. Cada item: dict com repeat, fold, train, val, test (nomes de imagem)."""
+def make_folds(images, Y, n_splits=5, n_repeats=3, val_size=0.2, seed=42):
+    """Gera os 15 splits (5 folds × 3 repetições). Cada item: dict com repeat, fold,
+    train, val, test (nomes de imagem). 15 pares bastam para o Wilcoxon (mínimo 6)."""
     rmskf = RepeatedMultilabelStratifiedKFold(
         n_splits=n_splits, n_repeats=n_repeats, random_state=seed
     )
