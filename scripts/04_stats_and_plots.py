@@ -102,6 +102,11 @@ def image_vector(df):
     return df.groupby("image")["AP"].mean()
 
 
+def class_vector(df, cls, iou="0.1"):
+    """Vetor de AP por fold de uma classe (ordenado por repeat, fold)."""
+    return df.sort_values(["repeat", "fold"])[f"AP@{iou}_{cls}"].to_numpy(dtype=float)
+
+
 def compare(fold_data, image_data):
     """Roda as comparações pareadas para todos os pares de configs disponíveis."""
     pairs = [p for p in itertools.combinations(CONFIGS, 2)
@@ -137,6 +142,29 @@ def compare(fold_data, image_data):
         for r, adj in zip(results, adj_img):
             r["img_W_p_holm"] = adj
     return pd.DataFrame(results)
+
+
+def compare_per_class(fold_data, iou="0.1"):
+    """Wilcoxon pareado POR CLASSE (MA/EX/SE/HE) para cada par de configs. É onde a
+    hipótese vive: o SAHI deve ajudar sobretudo o MA, mesmo que o mAP global não mostre.
+    Holm-Bonferroni aplicado sobre toda a família de testes por classe."""
+    pairs = [p for p in itertools.combinations(CONFIGS, 2)
+             if p[0] in fold_data and p[1] in fold_data]
+    rows, raw_p = [], []
+    for x, y in pairs:
+        for cls in CLASS_NAMES:
+            a, b = class_vector(fold_data[x], cls, iou), class_vector(fold_data[y], cls, iou)
+            mask = ~(np.isnan(a) | np.isnan(b))     # ignora folds sem a classe (raro)
+            a, b = a[mask], b[mask]
+            w = wilcoxon_paired(a, b)
+            rows.append({"par": f"{x} vs {y}", "classe": cls,
+                         "mean_x": a.mean(), "mean_y": b.mean(),
+                         "delta": b.mean() - a.mean(), "W_p": w["p"], "r": w["r"], "n": w["n"]})
+            raw_p.append(w["p"])
+    if raw_p:
+        for r, adj in zip(rows, holm_bonferroni(raw_p)):
+            r["W_p_holm"] = adj
+    return pd.DataFrame(rows)
 
 
 def plot_map_bars(fold_data, suffix):
@@ -189,17 +217,24 @@ def main():
         raise SystemExit(f"Nenhum results/fold_maps_*{args.suffix}.csv encontrado.")
     print("Configs encontradas:", ", ".join(fold_data))
 
-    table = compare(fold_data, image_data)
     pd.set_option("display.width", 200, "display.max_columns", 20)
-    print("\n=== Comparações pareadas ===")
+
+    table = compare(fold_data, image_data)
+    print("\n=== Comparações pareadas — mAP@0.1 GLOBAL ===")
     print(table.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
+
+    per_class = compare_per_class(fold_data)
+    print("\n=== Comparações pareadas — AP@0.1 POR CLASSE (Wilcoxon + Holm) ===")
+    print(per_class.to_string(index=False, float_format=lambda v: f"{v:.4f}"))
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     table.to_csv(RESULTS_DIR / f"stats_summary{args.suffix}.csv", index=False)
+    per_class.to_csv(RESULTS_DIR / f"stats_per_class{args.suffix}.csv", index=False)
     p1 = plot_map_bars(fold_data, args.suffix)
     p2 = plot_per_class(fold_data, args.suffix)
     print(f"\nFiguras: {p1}\n         {p2}")
-    print(f"Tabela : {RESULTS_DIR / f'stats_summary{args.suffix}.csv'}")
+    print(f"Tabelas: {RESULTS_DIR / f'stats_summary{args.suffix}.csv'}")
+    print(f"         {RESULTS_DIR / f'stats_per_class{args.suffix}.csv'}")
 
 
 if __name__ == "__main__":
