@@ -146,13 +146,23 @@ def run_fold(split, params, config, device):
     sliced_base = SLICED_DIR / config
     test_imgs = img_paths(split["test"])
 
-    # regime de treino: 'A'/'B'/'AB' treinam em imagem cheia; 'C' em tiles.
-    train_regime = "A" if config in ("A", "B", "AB") else "C"
-    data_yaml = train_data_yaml(train_regime, split, info, sliced_base, params)
-    # aplica overrides de treino da config (ex.: C usa imgsz=512, batch maior)
-    train_params = {**params, **CONFIG_TRAIN_OVERRIDES.get(config, {})}
-    weights = train_yolo(train_params["model"], data_yaml, train_params,
-                         ul_device(device), proj, "train")
+    # Retomada: se o best.pt do fold já existe (treino concluído em execução anterior),
+    # reusa e pula treino/fatiamento — só re-avalia. Recupera folds cujo mAP se perdeu
+    # num desligamento (o peso sobrevive em disco; a métrica, que ficava só em RAM, não).
+    weights = proj / "train" / "weights" / "best.pt"
+    if weights.exists():
+        print(f"  [reuse] best.pt existente -> pula treino ({info['dir'].name})")
+    else:
+        # regime de treino: 'A'/'B'/'AB' treinam em imagem cheia; 'C' em tiles.
+        train_regime = "A" if config in ("A", "B", "AB") else "C"
+        # limpa tiles parciais de um fold interrompido antes de refatiar (Config C)
+        if config == "C":
+            shutil.rmtree(sliced_base / info["dir"].name, ignore_errors=True)
+        data_yaml = train_data_yaml(train_regime, split, info, sliced_base, params)
+        # aplica overrides de treino da config (ex.: C usa imgsz=512, batch maior)
+        train_params = {**params, **CONFIG_TRAIN_OVERRIDES.get(config, {})}
+        weights = train_yolo(train_params["model"], data_yaml, train_params,
+                             ul_device(device), proj, "train")
 
     if config == "AB":
         out = {}
@@ -173,21 +183,33 @@ def run_fold(split, params, config, device):
     return out
 
 
-def save_config_results(out_cfg, rows, per_image_rows, suffix):
-    """Grava os 2 CSVs de uma config: mAP por fold e AP por imagem (entradas da Etapa 8)."""
-    fold_csv = RESULTS_DIR / f"fold_maps_{out_cfg}{suffix}.csv"
-    with open(fold_csv, "w", newline="") as f:
+def fold_csv_path(out_cfg, suffix):
+    return RESULTS_DIR / f"fold_maps_{out_cfg}{suffix}.csv"
+
+
+def img_csv_path(out_cfg, suffix):
+    return RESULTS_DIR / f"ap_per_image_{out_cfg}{suffix}.csv"
+
+
+def read_done_folds(csv_path):
+    """(repeat, fold) já gravados num fold_maps CSV + os mAP@0.1 lidos (p/ resumo)."""
+    if not csv_path.exists():
+        return set(), []
+    rows = list(csv.DictReader(open(csv_path)))
+    done = {(int(r["repeat"]), int(r["fold"])) for r in rows}
+    return done, [float(r["mAP@0.1"]) for r in rows]
+
+
+def append_rows(csv_path, rows):
+    """Anexa linhas ao CSV (escreve cabecalho só se o arquivo ainda não existe)."""
+    if not rows:
+        return
+    write_header = not csv_path.exists()
+    with open(csv_path, "a", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        w.writeheader()
+        if write_header:
+            w.writeheader()
         w.writerows(rows)
-    img_csv = RESULTS_DIR / f"ap_per_image_{out_cfg}{suffix}.csv"
-    with open(img_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(per_image_rows[0].keys()))
-        w.writeheader()
-        w.writerows(per_image_rows)
-    maps = [r["mAP@0.1"] for r in rows]
-    print(f"[{out_cfg}] mAP@0.1: {np.mean(maps):.4f} ± {np.std(maps):.4f} "
-          f"({len(maps)} folds) -> {fold_csv.name}, {img_csv.name}")
 
 
 def main():
@@ -224,24 +246,46 @@ def main():
     else:
         suffix = ""
 
-    # acumula por config de SAIDA (config 'AB' produz A e B)
-    acc = defaultdict(lambda: {"rows": [], "img": []})
+    # configs de SAIDA (config 'AB' produz A e B)
+    out_configs = ["A", "B"] if args.config == "AB" else [args.config]
+
+    # Retomada: um fold está concluído se já consta em TODOS os fold_maps CSVs de saída.
+    # Prime o resumo final (acc_maps) com os mAP@0.1 já gravados por execuções anteriores.
+    done_per_cfg, acc_maps = {}, defaultdict(list)
+    for c in out_configs:
+        done_per_cfg[c], maps = read_done_folds(fold_csv_path(c, suffix))
+        acc_maps[c].extend(maps)
+    done_folds = set.intersection(*done_per_cfg.values()) if done_per_cfg else set()
+    if done_folds:
+        print(f"[RESUME] {len(done_folds)} fold(s) já concluídos serão pulados: "
+              + ", ".join(f"r{r}_f{f}" for r, f in sorted(done_folds)))
+
     for split in splits:
         tag = f"r{split['repeat']}_f{split['fold']}"
+        if (split["repeat"], split["fold"]) in done_folds:
+            print(f"\n[{tag}] já concluído -> pula")
+            continue
         print(f"\n[{tag}]")
         fold_results = run_fold(split, params, args.config, args.device)
         for out_cfg, (res, per_image) in fold_results.items():
             print(f"  [{out_cfg}] TESTE: mAP@0.1={res['mAP@0.1']:.4f}  mAP@0.5={res['mAP@0.5']:.4f}")
-            a = acc[out_cfg]
-            a["rows"].append({"config": f"{out_cfg}_config", "repeat": split["repeat"],
-                              "fold": split["fold"], **res})
-            for img, ap in per_image.items():
-                a["img"].append({"config": f"{out_cfg}_config", "repeat": split["repeat"],
-                                 "fold": split["fold"], "image": img, "AP": ap})
+            rows = [{"config": f"{out_cfg}_config", "repeat": split["repeat"],
+                     "fold": split["fold"], **res}]
+            img_rows = [{"config": f"{out_cfg}_config", "repeat": split["repeat"],
+                         "fold": split["fold"], "image": img, "AP": ap}
+                        for img, ap in per_image.items()]
+            # checkpoint imediato: grava o fold antes de seguir (sobrevive a desligamento)
+            append_rows(fold_csv_path(out_cfg, suffix), rows)
+            append_rows(img_csv_path(out_cfg, suffix), img_rows)
+            acc_maps[out_cfg].append(res["mAP@0.1"])
 
     print()
-    for out_cfg, a in acc.items():
-        save_config_results(out_cfg, a["rows"], a["img"], suffix)
+    for out_cfg, maps in acc_maps.items():
+        if not maps:
+            continue
+        print(f"[{out_cfg}] mAP@0.1: {np.mean(maps):.4f} ± {np.std(maps):.4f} "
+              f"({len(maps)} folds) -> {fold_csv_path(out_cfg, suffix).name}, "
+              f"{img_csv_path(out_cfg, suffix).name}")
 
 
 if __name__ == "__main__":
