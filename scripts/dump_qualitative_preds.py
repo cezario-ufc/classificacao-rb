@@ -69,8 +69,10 @@ def serialize(result):
     out = []
     for op in result.object_prediction_list:
         x, y, w, h = op.bbox.to_xywh()
-        out.append([op.category.id, round(x, 1), round(y, 1),
-                    round(w, 1), round(h, 1), round(op.score.value, 4)])
+        # np.float32/np.int64 nao sao serializaveis pelo json -> tipos nativos
+        out.append([int(op.category.id), round(float(x), 1), round(float(y), 1),
+                    round(float(w), 1), round(float(h), 1),
+                    round(float(op.score.value), 4)])
     return out
 
 
