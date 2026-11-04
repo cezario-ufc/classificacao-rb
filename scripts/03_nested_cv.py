@@ -13,6 +13,17 @@ Configs (Seção 3 do spec):
 Uso:
     python scripts/03_nested_cv.py --config B --smoke      # smoke-test (1 fold, subset, 1 época)
     python scripts/03_nested_cv.py --config B              # execução real (na máquina de treino)
+    python scripts/03_nested_cv.py --config AB --model yolo26n.pt   # outro modelo YOLO
+    python scripts/03_nested_cv.py --config AB --model yolo26n.pt --optimizer MuSGD
+
+Isolamento das saídas: sufixo de execução = <tag do modelo> + <tag do otimizador> +
+<_smoke | _foldsN>. As tags são vazias para o padrão (yolov8m, SGD) e '_<nome>' para os
+demais (ex.: '_yolo26n_musgd'). O sufixo vai em TODAS as saídas — pesos
+(runs/nested_cv/<cfg><sufixo>), folds (runs/folds/<cfg><sufixo>), tiles
+(data/sliced/<cfg><sufixo>) e CSVs (results/fold_maps_<cfg><sufixo>.csv) —, então uma
+combinação modelo/otimizador nunca sobrescreve nem reaproveita (retomada) os resultados de
+outra. A estatística sai com:
+    python scripts/04_stats_and_plots.py --suffix _yolo26n_musgd
 """
 
 from __future__ import annotations
@@ -48,6 +59,7 @@ SLICED_DIR = REPO_ROOT / "data" / "sliced"
 # (para quando o val do Ultralytics estabiliza), então 'epochs' é só o teto de segurança.
 PARAMS = {
     "model": "yolov8m.pt",
+    "optimizer": "SGD",
     "lr0": 0.01,
     "imgsz": 1024,
     "epochs": 100,
@@ -61,6 +73,7 @@ PARAMS = {
 # Overrides do smoke-test (roda em segundos/minutos).
 SMOKE_PARAMS = {
     "model": "yolov8n.pt",
+    "optimizer": "SGD",
     "lr0": 0.01,
     "imgsz": 640,
     "epochs": 1,
@@ -71,6 +84,12 @@ SMOKE_PARAMS = {
     "overlap": 0.2,
 }
 SMOKE_SUBSET = {"train": 8, "val": 4, "test": 4}
+
+# Otimizadores aceitos por --optimizer (nomes do Ultralytics). 'auto' fica de FORA de
+# propósito: ignora o lr0 e escolhe pelo nº de iterações — aqui daria AdamW para A/B
+# (~800 iterações) e MuSGD para C (~19k, tiles), confundindo a comparação entre configs.
+# MuSGD (SGD + Muon) é o otimizador do YOLO26; lr0=0.01 é o mesmo que o 'auto' usa com ele.
+OPTIMIZERS = ["SGD", "MuSGD", "Adam", "AdamW", "NAdam", "RAdam", "RMSProp"]
 
 # Overrides de TREINO por config. A Config C treina nos tiles nativos (512px): treinar em
 # imgsz=1024 ampliaria cada tile 512->1024, gastando ~4x compute sem nova informação. Como
@@ -130,7 +149,20 @@ def train_data_yaml(config, split, info, out_base, params):
     return sliced_data_yaml(split["train"], split["val"], out, params)
 
 
-def run_fold(split, params, config, device):
+def model_tag(model: str) -> str:
+    """'' para o modelo padrão (mantém os caminhos dos resultados já existentes);
+    '_<nome>' para qualquer outro (ex.: 'yolo26n.pt' -> '_yolo26n')."""
+    stem = Path(model).stem
+    return "" if stem == Path(PARAMS["model"]).stem else f"_{stem}"
+
+
+def optimizer_tag(optimizer: str) -> str:
+    """'' para o otimizador padrão (SGD, mantém os caminhos existentes); '_<nome>' minúsculo
+    para os demais (ex.: 'MuSGD' -> '_musgd')."""
+    return "" if optimizer == PARAMS["optimizer"] else f"_{optimizer.lower()}"
+
+
+def run_fold(split, params, config, device, suffix=""):
     """Treina no train do fold (val p/ early-stopping) e avalia no test. Devolve
     {config_saida: (metrics, per_image)}.
 
@@ -138,12 +170,14 @@ def run_fold(split, params, config, device):
     cheia (A) e SAHI (B). Assim A vs B isola exatamente a inferência e economiza 1 treino.
     A/B/C individuais treinam e avaliam uma config só.
 
-    Todas as saídas são isoladas por config (runs/.../<config>/...) para permitir rodar
-    configs diferentes em paralelo (ex.: AB numa GPU e C na outra) sem colisão de arquivos.
+    Todas as saídas são isoladas por config E por sufixo de execução
+    (runs/.../<config><suffix>/...) para permitir rodar configs diferentes em paralelo
+    (ex.: AB numa GPU e C na outra) e modelos/smoke diferentes sem colisão de arquivos.
     """
-    info = build_fold_dirs(split, base_dir=RUNS_DIR.parent / "folds" / config)
-    proj = RUNS_DIR / config / info["dir"].name
-    sliced_base = SLICED_DIR / config
+    run_name = f"{config}{suffix}"
+    info = build_fold_dirs(split, base_dir=RUNS_DIR.parent / "folds" / run_name)
+    proj = RUNS_DIR / run_name / info["dir"].name
+    sliced_base = SLICED_DIR / run_name
     test_imgs = img_paths(split["test"])
 
     # Retomada: se o best.pt do fold já existe (treino concluído em execução anterior),
@@ -220,9 +254,22 @@ def main():
     ap.add_argument("--folds", type=int, default=None, metavar="N",
                     help="roda só os N primeiros folds em ESCALA REAL (sanity de VRAM/tempo/disco)")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--model", default=None,
+                    help=f"pesos YOLO (default: {PARAMS['model']}; smoke: {SMOKE_PARAMS['model']}). "
+                         "Um modelo diferente do padrão grava em saídas com sufixo próprio "
+                         "(ex.: yolo26n.pt -> _yolo26n), sem tocar nos resultados existentes")
+    ap.add_argument("--optimizer", default=PARAMS["optimizer"],
+                    type=lambda s: next((o for o in OPTIMIZERS if o.lower() == s.lower()), s),
+                    choices=OPTIMIZERS,
+                    help=f"otimizador do treino (default: {PARAMS['optimizer']}). Um diferente do "
+                         "padrão grava em saídas com sufixo próprio (ex.: MuSGD -> _musgd)")
     args = ap.parse_args()
 
-    params = SMOKE_PARAMS if args.smoke else PARAMS
+    params = dict(SMOKE_PARAMS if args.smoke else PARAMS)
+    if args.model:
+        params["model"] = args.model
+    params["optimizer"] = args.optimizer
+    tag = (model_tag(args.model) if args.model else "") + optimizer_tag(args.optimizer)
 
     images, Y = load_manifest()
     splits = make_folds(images, Y)
@@ -238,13 +285,18 @@ def main():
         print(f"config {args.config} | {len(splits)} folds | device {args.device}")
 
     RESULTS_DIR.mkdir(exist_ok=True)
-    # sufixo separa saidas parciais (smoke/sanity) das do resultado final
+    # sufixo = tag do modelo + modo: separa outros modelos e saídas parciais (smoke/sanity)
+    # do resultado final, em CSVs E em pesos/tiles/folds (ver run_fold)
     if args.smoke:
-        suffix = "_smoke"
+        mode = "_smoke"
     elif args.folds is not None:
-        suffix = f"_folds{args.folds}"
+        mode = f"_folds{args.folds}"
     else:
-        suffix = ""
+        mode = ""
+    suffix = tag + mode
+    print(f"modelo {params['model']} | otimizador {params['optimizer']} (lr0={params['lr0']}) "
+          f"| sufixo das saídas: '{suffix}' "
+          f"-> runs/nested_cv/{args.config}{suffix}/, results/fold_maps_*{suffix}.csv")
 
     # configs de SAIDA (config 'AB' produz A e B)
     out_configs = ["A", "B"] if args.config == "AB" else [args.config]
@@ -266,7 +318,7 @@ def main():
             print(f"\n[{tag}] já concluído -> pula")
             continue
         print(f"\n[{tag}]")
-        fold_results = run_fold(split, params, args.config, args.device)
+        fold_results = run_fold(split, params, args.config, args.device, suffix)
         for out_cfg, (res, per_image) in fold_results.items():
             print(f"  [{out_cfg}] TESTE: mAP@0.1={res['mAP@0.1']:.4f}  mAP@0.5={res['mAP@0.5']:.4f}")
             rows = [{"config": f"{out_cfg}_config", "repeat": split["repeat"],

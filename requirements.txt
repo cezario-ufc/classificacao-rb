@@ -3,7 +3,7 @@
 # o ultralytics puxa torch, mas deixar explícito evita pegar build errado de CUDA.
 
 # Detector e slicing
-ultralytics>=8.2.0
+ultralytics==8.4.90  # versão EXATA dos runs yolov8m (gravada nos best.pt); já inclui o YOLO26
 sahi>=0.11.18
 
 # Visão / IO

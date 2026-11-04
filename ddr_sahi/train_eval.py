@@ -20,8 +20,9 @@ from ddr_sahi.coco_eval import evaluate_per_image, evaluate_predictions
 def map_params(params: dict) -> dict:
     """Hiperparâmetros de treino do Ultralytics (o resto é de inferência/SAHI).
 
-    optimizer é fixado (default SGD) DE PROPÓSITO: com 'optimizer=auto' o Ultralytics
-    ignora o lr0, o que anularia o GridSearch sobre lr0. Fixando, o lr0 passa a valer.
+    optimizer é sempre EXPLÍCITO (default SGD; MuSGD p/ YOLO26 via --optimizer no 03):
+    com 'optimizer=auto' o Ultralytics ignora o lr0 e escolhe o otimizador pelo nº de
+    iterações (AdamW em A/B vs MuSGD em C aqui). Explícito, o lr0 vale e é igual nas configs.
     """
     return {
         "imgsz": params["imgsz"],
