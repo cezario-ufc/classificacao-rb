@@ -39,6 +39,7 @@ import numpy as np
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from ddr_sahi.checkpoints import is_finalized  # noqa: E402
 from ddr_sahi.folds import (  # noqa: E402
     CLASS_NAMES,
     YOLO_DIR,
@@ -180,13 +181,21 @@ def run_fold(split, params, config, device, suffix=""):
     sliced_base = SLICED_DIR / run_name
     test_imgs = img_paths(split["test"])
 
-    # Retomada: se o best.pt do fold já existe (treino concluído em execução anterior),
-    # reusa e pula treino/fatiamento — só re-avalia. Recupera folds cujo mAP se perdeu
-    # num desligamento (o peso sobrevive em disco; a métrica, que ficava só em RAM, não).
-    weights = proj / "train" / "weights" / "best.pt"
-    if weights.exists():
-        print(f"  [reuse] best.pt existente -> pula treino ({info['dir'].name})")
+    # Retomada: se o best.pt do fold existe E está finalizado (treino concluído em execução
+    # anterior), reusa e pula treino/fatiamento — só re-avalia. best.pt existir não basta:
+    # o Ultralytics o grava desde a 1ª época, então um treino interrompido deixa um best.pt
+    # de meio de treino (não finalizado), que é descartado e o fold treina do zero.
+    train_dir = proj / "train"
+    weights = train_dir / "weights" / "best.pt"
+    reuse = weights.exists() and is_finalized(weights)
+    if reuse:
+        print(f"  [reuse] best.pt finalizado -> pula treino ({info['dir'].name})")
     else:
+        if train_dir.exists():
+            # sobras de treino interrompido: best.pt parcial e results.csv (o Ultralytics
+            # ANEXA ao results.csv existente, misturaria as épocas das duas tentativas)
+            print(f"  [retrain] treino anterior incompleto em {train_dir} -> apaga e treina do zero")
+            shutil.rmtree(train_dir)
         # regime de treino: 'A'/'B'/'AB' treinam em imagem cheia; 'C' em tiles.
         train_regime = "A" if config in ("A", "B", "AB") else "C"
         # limpa tiles parciais de um fold interrompido antes de refatiar (Config C)
