@@ -44,6 +44,10 @@ Uso (na Balerion, imagem antiga com código montado; mesmo esquema do 03):
     python scripts/tune_sahi.py --stage test
     python scripts/04_stats_and_plots.py --suffix _tuned
     python scripts/tune_sahi.py --stage val --model-suffix _yolo26n_musgd   # outro modelo
+
+Ablação sem o modelo A (só rotas de um modelo; reaproveita o val, escolhe só entre elas):
+    python scripts/tune_sahi.py --stage test --weights C --routes sahi,sahi-nostd --tag _tiles
+    python scripts/04_stats_and_plots.py --suffix _tuned_tiles
 """
 
 from __future__ import annotations
@@ -328,15 +332,28 @@ def choose(val_rows):
     return best
 
 
+def in_grid(row, args):
+    """Linha do val pertence à grade pedida (--scales/--pp/--routes)?"""
+    return (row["scale"] in args.scales.split(",") and row["pp"] in args.pp.split(",")
+            and row["route"] in args.routes.split(","))
+
+
 def stage_test(args, splits, wmaps):
     val_csv = RESULTS_DIR / f"sahi_tuning_val{args.model_suffix}.csv"
-    chosen = choose(read_rows(val_csv))
-    if not chosen:
+    rows = read_rows(val_csv)
+    if not rows:
         raise SystemExit(f"nada em {val_csv}: rode --stage val antes")
-    suffix = f"{args.model_suffix}_tuned"
+    kept = [r for r in rows if in_grid(r, args)]
+    if not kept:
+        raise SystemExit("nenhuma linha do val dentro da grade pedida (--scales/--pp/--routes)")
+    if len(kept) < len(rows) and not args.tag:
+        raise SystemExit("a grade pedida exclui combinações do val: passe --tag (ex.: _tiles) p/ "
+                         "não misturar com as saídas *_tuned da grade completa")
+    chosen = choose(kept)
+    suffix = f"{args.model_suffix}_tuned{args.tag}"
     fold_csv = {c: RESULTS_DIR / f"fold_maps_{c}{suffix}.csv" for c in ["A", *args.weights]}
     img_csv = {c: RESULTS_DIR / f"ap_per_image_{c}{suffix}.csv" for c in fold_csv}
-    choice_csv = RESULTS_DIR / f"sahi_tuning_choices{args.model_suffix}.csv"
+    choice_csv = RESULTS_DIR / f"sahi_tuning_choices{args.model_suffix}{args.tag}.csv"
     done = {c: {(int(r["repeat"]), int(r["fold"])) for r in read_rows(p)}
             for c, p in fold_csv.items()}
     print(f"[test] saídas: fold_maps_{{{','.join(fold_csv)}}}{suffix}.csv")
@@ -456,9 +473,14 @@ def main():
     ap.add_argument("--conf", type=float, default=0.1, help="fixo p/ A, B e C (não é ajustado)")
     ap.add_argument("--folds", type=int, default=None, metavar="N", help="só os N primeiros folds")
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--tag", default="",
+                    help="(test) sufixo extra das saídas, obrigatório se --scales/--pp/--routes "
+                         "restringirem a grade (ex.: --routes sahi,sahi-nostd --tag _tiles)")
     args = ap.parse_args()
     if not args.stage and not args.check:
         ap.error("informe --stage val|test ou --check N")
+    if args.tag and not args.tag.startswith("_"):
+        args.tag = "_" + args.tag
     for pp in args.pp.split(","):
         if pp.split(":")[0] not in PP_CLASSES:
             ap.error(f"pp inválido: {pp}")
