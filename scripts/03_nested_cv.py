@@ -48,7 +48,12 @@ from ddr_sahi.folds import (  # noqa: E402
     make_folds,
 )
 from ddr_sahi.slicing import slice_train_set  # noqa: E402
-from ddr_sahi.train_eval import evaluate_config_full, train_yolo  # noqa: E402
+from ddr_sahi.train_eval import (  # noqa: E402
+    evaluate_config_full,
+    resumable_epoch,
+    resume_yolo,
+    train_yolo,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RESULTS_DIR = REPO_ROOT / "results"
@@ -181,23 +186,38 @@ def run_fold(split, params, config, device, suffix=""):
     sliced_base = SLICED_DIR / run_name
     test_imgs = img_paths(split["test"])
 
-    # Retomada: se o best.pt do fold existe E está finalizado (treino concluído em execução
-    # anterior), reusa e pula treino/fatiamento — só re-avalia. best.pt existir não basta:
-    # o Ultralytics o grava desde a 1ª época, então um treino interrompido deixa um best.pt
-    # de meio de treino (não finalizado), que é descartado e o fold treina do zero.
+    # Retomada, em ordem:
+    #  1. best.pt FINALIZADO (treino concluído antes) -> reusa, só re-avalia. Existir não basta:
+    #     o Ultralytics grava best.pt desde a 1ª época.
+    #  2. last.pt de treino interrompido (queda/segfault) -> continua da última época salva
+    #     (pesos, EMA, otimizador, early-stopping), sem refatiar: os tiles do C só são apagados
+    #     depois que o fold termina.
+    #  3. senão -> apaga as sobras e treina do zero.
     train_dir = proj / "train"
     weights = train_dir / "weights" / "best.pt"
+    last = train_dir / "weights" / "last.pt"
     reuse = weights.exists() and is_finalized(weights)
+    train_regime = "A" if config in ("A", "B", "AB") else "C"
+    done_epochs = None if reuse else resumable_epoch(last)
+    if not reuse and done_epochs is None and resumable_epoch(last, require_data=False):
+        # checkpoint retomável mas os tiles sumiram (ex.: container recriado): o fatiamento é
+        # determinístico e grava no mesmo caminho do data.yaml do checkpoint -> refatia e retoma
+        print("  [resume] dataset do checkpoint ausente -> refatia no mesmo caminho")
+        if config == "C":
+            shutil.rmtree(sliced_base / info["dir"].name, ignore_errors=True)
+        train_data_yaml(train_regime, split, info, sliced_base, params)
+        done_epochs = resumable_epoch(last)
     if reuse:
         print(f"  [reuse] best.pt finalizado -> pula treino ({info['dir'].name})")
+    elif done_epochs is not None:
+        print(f"  [resume] treino interrompido após {done_epochs} épocas -> continua de {last}")
+        weights = resume_yolo(last, ul_device(device))
     else:
         if train_dir.exists():
             # sobras de treino interrompido: best.pt parcial e results.csv (o Ultralytics
             # ANEXA ao results.csv existente, misturaria as épocas das duas tentativas)
             print(f"  [retrain] treino anterior incompleto em {train_dir} -> apaga e treina do zero")
             shutil.rmtree(train_dir)
-        # regime de treino: 'A'/'B'/'AB' treinam em imagem cheia; 'C' em tiles.
-        train_regime = "A" if config in ("A", "B", "AB") else "C"
         # limpa tiles parciais de um fold interrompido antes de refatiar (Config C)
         if config == "C":
             shutil.rmtree(sliced_base / info["dir"].name, ignore_errors=True)

@@ -53,6 +53,75 @@ def train_yolo(model_name, data_yaml, params, device, project, name):
     return Path(project) / name / "weights" / "best.pt"
 
 
+def resumable_epoch(last_pt, require_data: bool = True) -> int | None:
+    """Épocas concluídas no last.pt de um treino interrompido, ou None se não dá para retomar
+    (ausente/corrompido, já finalizado, já na última época ou — com require_data — o
+    data.yaml do checkpoint não existe mais)."""
+    from ddr_sahi.checkpoints import meta_is_finalized, read_ckpt_meta
+
+    last_pt = Path(last_pt)
+    if not last_pt.exists():
+        return None
+    try:
+        ck = read_ckpt_meta(last_pt)
+    except Exception:  # noqa: BLE001  last.pt truncado (queda durante a gravação)
+        return None
+    args = ck.get("train_args") or {}
+    epoch = ck.get("epoch")
+    if meta_is_finalized(ck) or not isinstance(epoch, int) or epoch < 0:
+        return None
+    if not isinstance(args.get("data"), str):
+        return None
+    if require_data and not Path(args["data"]).exists():
+        return None   # sem o data.yaml o Ultralytics cairia no dataset default
+    if epoch + 1 >= int(args.get("epochs", 0)):
+        return None   # Ultralytics recusa retomar após a última época
+    return epoch + 1
+
+
+def resume_yolo(last_pt, device):
+    """Retoma o treino do last.pt (Ultralytics restaura pesos, EMA, otimizador, scaler, época e
+    best_fitness) e devolve o best.pt.
+
+    O EarlyStopping NÃO é salvo no checkpoint: sem correção, a paciência recomeçaria do zero
+    na retomada. Restauramos best_epoch = 1ª época com o maior mAP50-95 (a fitness do
+    Ultralytics 8.4) no results.csv, como o EarlyStopping teria registrado (melhora estrita).
+    O results.csv é cortado nas épocas do checkpoint (uma queda entre save_metrics e
+    save_model deixaria uma linha a mais, que seria regravada).
+    """
+    last_pt = Path(last_pt)
+    train_dir = last_pt.parents[1]
+    done = resumable_epoch(last_pt)
+    if done is None:
+        raise ValueError(f"{last_pt} não é retomável")
+
+    best_epoch = done
+    csv_path = train_dir / "results.csv"
+    if csv_path.exists():
+        lines = [ln for ln in csv_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        header, rows = lines[0], lines[1:]
+        rows = [r for r in rows if int(float(r.split(",")[0])) <= done]
+        csv_path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+        cols = [c.strip() for c in header.split(",")]
+        key = "metrics/mAP50-95(B)"
+        if key in cols and rows:
+            i = cols.index(key)
+            vals = [(int(float(r.split(",")[0])), float(r.split(",")[i])) for r in rows]
+            top = max(v for _, v in vals)
+            best_epoch = next(e for e, v in vals if v == top)
+
+    def restore_stopper(trainer):
+        trainer.stopper.best_fitness = trainer.best_fitness
+        trainer.stopper.best_epoch = best_epoch
+        print(f"  [resume] EarlyStopping restaurado: best_epoch={best_epoch}, "
+              f"best_fitness={float(trainer.best_fitness):.5f}, paciência={trainer.stopper.patience}")
+
+    model = YOLO(str(last_pt))
+    model.add_callback("on_pretrain_routine_end", restore_stopper)
+    model.train(resume=True, device=device)
+    return train_dir / "weights" / "best.pt"
+
+
 def _build_sahi_model(weights, conf, device):
     return AutoDetectionModel.from_pretrained(
         model_type="ultralytics",
