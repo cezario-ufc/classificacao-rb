@@ -34,9 +34,35 @@ def map_params(params: dict) -> dict:
     }
 
 
-def train_yolo(model_name, data_yaml, params, device, project, name):
-    """Treina um YOLO e devolve o caminho do best.pt."""
+def _stop_after(n_epochs):
+    """Callback que encerra o treino ao fim da época n_epochs (1-based). Mantém o agendamento
+    de LR do 'epochs' original: o treino segue a mesma curva do run com early-stopping e só
+    para mais cedo. Com self.stop=True o Ultralytics valida, salva e faz o final_eval."""
+    def cb(trainer):
+        if trainer.epoch + 1 >= n_epochs:
+            trainer.stop = True
+    return cb
+
+
+def fixed_epochs_kwargs():
+    """Sem validação por época e sem early-stopping (patience=0 -> infinita): no treino final
+    (todas as imagens anotadas) não há conjunto livre para validar. O Ultralytics ainda valida na última
+    época (só informativo; não escolhe pesos — best.pt = last.pt = pesos da última época)."""
+    return {"val": False, "patience": 0}
+
+
+def train_yolo(model_name, data_yaml, params, device, project, name, stop_epoch=None):
+    """Treina um YOLO e devolve o caminho do best.pt.
+
+    stop_epoch: treina exatamente esse nº de épocas, sem validação nem early-stopping (treino
+    final, scripts/05_train_final.py); o teto 'epochs' de params continua definindo o agendamento
+    de LR.
+    """
     model = YOLO(model_name)
+    extra = {}
+    if stop_epoch is not None:
+        model.add_callback("on_train_epoch_end", _stop_after(stop_epoch))
+        extra = fixed_epochs_kwargs()
     model.train(
         data=str(data_yaml),
         device=device,
@@ -48,9 +74,33 @@ def train_yolo(model_name, data_yaml, params, device, project, name):
         plots=False,
         # augmentação moderada p/ lesões pequenas (mosaic off)
         mosaic=0.0,
-        **map_params(params),
+        **{**map_params(params), **extra},
     )
     return Path(project) / name / "weights" / "best.pt"
+
+
+def best_epoch_from_results(csv_path, max_epoch=None) -> int | None:
+    """Época (1-based) que o EarlyStopping/best.pt escolheu: a 1ª com o maior mAP50-95 (a
+    fitness do Ultralytics 8.4) no results.csv. max_epoch ignora linhas além dele. None se o
+    CSV não existe ou não tem a coluna."""
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        return None
+    lines = [ln for ln in csv_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if len(lines) < 2:
+        return None
+    cols = [c.strip() for c in lines[0].split(",")]
+    key = "metrics/mAP50-95(B)"
+    if key not in cols:
+        return None
+    i = cols.index(key)
+    vals = [(int(float(r.split(",")[0])), float(r.split(",")[i])) for r in lines[1:]]
+    if max_epoch is not None:
+        vals = [(e, v) for e, v in vals if e <= max_epoch]
+    if not vals:
+        return None
+    top = max(v for _, v in vals)
+    return next(e for e, v in vals if v == top)
 
 
 def resumable_epoch(last_pt, require_data: bool = True) -> int | None:
@@ -79,7 +129,7 @@ def resumable_epoch(last_pt, require_data: bool = True) -> int | None:
     return epoch + 1
 
 
-def resume_yolo(last_pt, device):
+def resume_yolo(last_pt, device, stop_epoch=None):
     """Retoma o treino do last.pt (Ultralytics restaura pesos, EMA, otimizador, scaler, época e
     best_fitness) e devolve o best.pt.
 
@@ -88,6 +138,9 @@ def resume_yolo(last_pt, device):
     Ultralytics 8.4) no results.csv, como o EarlyStopping teria registrado (melhora estrita).
     O results.csv é cortado nas épocas do checkpoint (uma queda entre save_metrics e
     save_model deixaria uma linha a mais, que seria regravada).
+
+    stop_epoch: retomada de um treino de nº fixo de épocas (train_yolo com stop_epoch): não há
+    EarlyStopping a restaurar (val=False, patience infinita); só reinstala a parada na época.
     """
     last_pt = Path(last_pt)
     train_dir = last_pt.parents[1]
@@ -95,29 +148,28 @@ def resume_yolo(last_pt, device):
     if done is None:
         raise ValueError(f"{last_pt} não é retomável")
 
-    best_epoch = done
     csv_path = train_dir / "results.csv"
     if csv_path.exists():
         lines = [ln for ln in csv_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
         header, rows = lines[0], lines[1:]
         rows = [r for r in rows if int(float(r.split(",")[0])) <= done]
         csv_path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
-        cols = [c.strip() for c in header.split(",")]
-        key = "metrics/mAP50-95(B)"
-        if key in cols and rows:
-            i = cols.index(key)
-            vals = [(int(float(r.split(",")[0])), float(r.split(",")[i])) for r in rows]
-            top = max(v for _, v in vals)
-            best_epoch = next(e for e, v in vals if v == top)
-
-    def restore_stopper(trainer):
-        trainer.stopper.best_fitness = trainer.best_fitness
-        trainer.stopper.best_epoch = best_epoch
-        print(f"  [resume] EarlyStopping restaurado: best_epoch={best_epoch}, "
-              f"best_fitness={float(trainer.best_fitness):.5f}, paciência={trainer.stopper.patience}")
 
     model = YOLO(str(last_pt))
-    model.add_callback("on_pretrain_routine_end", restore_stopper)
+    if stop_epoch is not None:
+        model.add_callback("on_train_epoch_end", _stop_after(stop_epoch))
+        print(f"  [resume] treino de épocas fixas: {done} feitas, para ao fim da {stop_epoch}")
+    else:
+        best_epoch = best_epoch_from_results(csv_path, max_epoch=done) or done
+
+        def restore_stopper(trainer):
+            trainer.stopper.best_fitness = trainer.best_fitness
+            trainer.stopper.best_epoch = best_epoch
+            print(f"  [resume] EarlyStopping restaurado: best_epoch={best_epoch}, "
+                  f"best_fitness={float(trainer.best_fitness):.5f}, "
+                  f"paciência={trainer.stopper.patience}")
+
+        model.add_callback("on_pretrain_routine_end", restore_stopper)
     model.train(resume=True, device=device)
     return train_dir / "weights" / "best.pt"
 
