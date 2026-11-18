@@ -30,7 +30,8 @@ from ddr_grading.models import MLPHead
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 
-# Fine-tuning: Adam e CE simples como no old_classification; lr/batch/weight decay vêm da grade
+# Fine-tuning: Adam como no old_classification, mas com entropia cruzada PONDERADA por classe
+# (class_weights; vale também para as cabeças MLP); lr/batch/weight decay vêm da grade
 # (scripts/07_grading_cv.py); nº de épocas por early-stopping na AUC do val.
 # micro_batch: pedaço que cabe na GPU (VGG19/ResNet152 em 512 px não cabem com 32 numa 3090);
 # batches maiores acumulam gradiente até o batch da grade.
@@ -74,6 +75,15 @@ def loader(names, labels, tf, shuffle, batch=None, generator=None):
     return DataLoader(CachedImages(names, labels, tf), batch_size=batch or FT["micro_batch"],
                       shuffle=shuffle, generator=generator, num_workers=FT["workers"],
                       pin_memory=True, drop_last=False)
+
+
+# --------------------------------------------------------------------------- perda
+def class_weights(labels, num_classes):
+    """Pesos 'balanced' da entropia cruzada, do treino do fold: w_c = N / (C · n_c). Cada classe
+    contribui igualmente para a perda (o grau 3 tem ~1,6% das imagens); classe ausente -> 0."""
+    counts = np.bincount(np.asarray(labels), minlength=num_classes).astype(np.float64)
+    w = np.divide(len(labels), num_classes * counts, out=np.zeros(num_classes), where=counts > 0)
+    return torch.tensor(w, dtype=torch.float32)
 
 
 # --------------------------------------------------------------------------- métricas
@@ -151,7 +161,7 @@ def finetune(net, tr_names, tr_labels, va_dl, va_labels, num_classes, hp, input_
     net.to(device)
     opt = torch.optim.Adam(net.parameters(), lr=hp["lr"], weight_decay=hp["weight_decay"])
     scaler = torch.amp.GradScaler("cuda", enabled=device.type == "cuda")
-    crit = nn.CrossEntropyLoss()
+    crit = nn.CrossEntropyLoss(weight=class_weights(tr_labels, num_classes).to(device))
     state = {"epoch": -1, "best": -1.0, "best_epoch": -1, "best_f1": None, "bad": 0}
     if last_pt.exists():
         ck = torch.load(last_pt, map_location="cpu")
@@ -223,7 +233,7 @@ def fit_mlp(emb, les, y, num_classes, hp, device, seed=42):
     head = MLPHead(e_tr.shape[1], num_classes,
                    lesion_dim=0 if les is None else l_tr.shape[1]).to(device)
     opt = torch.optim.AdamW(head.parameters(), lr=hp["lr"], weight_decay=hp["weight_decay"])
-    crit = nn.CrossEntropyLoss()
+    crit = nn.CrossEntropyLoss(weight=class_weights(y["train"], num_classes).to(device))
 
     def probs(e, l):
         head.eval()

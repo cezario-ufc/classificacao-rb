@@ -74,9 +74,10 @@ def main():
     for c in sorted(counts):
         print(f"  {c} {CLASS_NAMES.get(c, '?'):<15} {counts[c]:>6}  {100 * counts[c] / len(meta):5.1f}%")
     print(f"  total               {len(meta):>6}")
-    dark = sum(m["fov_frac"] == 1.0 for m in meta)
-    if dark:
-        print(f"  [info] {dark} imagens sem campo de visão detectável (usada a imagem inteira)")
+    full = sum(m["fov_frac"] == 1.0 for m in meta)
+    if full:
+        print(f"  [info] {full} imagens usadas inteiras, sem recorte (fov_frac=1): retina "
+              "ocupando o quadro todo, sem borda preta, ou imagem quase toda escura")
 
     splits = make_grading_folds([m["image"] for m in meta], [m["label"] for m in meta])
     FOLDS_CSV.parent.mkdir(exist_ok=True)
