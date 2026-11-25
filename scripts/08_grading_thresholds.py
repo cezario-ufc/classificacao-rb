@@ -106,7 +106,7 @@ def run_fold(bb, split, args, labels_of, feats, winners, num_classes, device):
                      "n_test": len(y["test"]), **{f"test_{k}": v for k, v in m.items()}})
         preds += [{"variant": variant, "repeat": split["repeat"], "fold": split["fold"],
                    "image": n, "label": t, "pred": int(p.argmax()),
-                   **{f"p{c}": round(float(p[c]), 5) for c in range(num_classes)}}
+                   **{f"p{c}": f"{float(p[c]):.6g}" for c in range(num_classes)}}
                   for n, t, p in zip(names["test"], y["test"], prob)]
         print(f"  [{variant:<10}] TESTE: AUC {m['auc_ovr_macro']:.4f} | F1 {m['f1_macro']:.4f}"
               f" | sens {m['sensitivity_macro']:.4f} | acc {m['accuracy']:.4f}")

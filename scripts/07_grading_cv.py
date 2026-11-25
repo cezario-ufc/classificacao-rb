@@ -173,7 +173,7 @@ def run_fold(split, args, labels_of, lesions, num_classes, device):
                      "n_test": len(y["test"]), **{f"test_{k}": v for k, v in m.items()}})
         preds += [{"variant": variant, "repeat": split["repeat"], "fold": split["fold"],
                    "image": n, "label": t, "pred": int(p.argmax()),
-                   **{f"p{c}": round(float(p[c]), 5) for c in range(num_classes)}}
+                   **{f"p{c}": f"{float(p[c]):.6g}" for c in range(num_classes)}}
                   for n, t, p in zip(names["test"], y["test"], prob)]
         print(f"  [{variant}] TESTE: AUC {m['auc_ovr_macro']:.4f} | sens "
               f"{m['sensitivity_macro']:.4f} | F1 {m['f1_macro']:.4f} | prec "
